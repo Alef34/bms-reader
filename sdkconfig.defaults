@@ -1,0 +1,5 @@
+# Arduino core requires FreeRTOS tick rate of 1000 Hz
+CONFIG_FREERTOS_HZ=1000
+
+# Disable HTTPS server certificate bundle to skip missing certificate error
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n

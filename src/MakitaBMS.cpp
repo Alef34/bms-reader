@@ -62,7 +62,7 @@ String MakitaBMS::readStaticData(BatteryData &data, SupportedFeatures &features)
     byte b1 = nibble_swap(response[35]); byte b2 = nibble_swap(response[34]);
     data.charge_cycles = ((b2 << 8) | b1) & 0x0FFF;
     data.lock_status = (response[28] & 0x0F) > 0 ? "LOCKED" : "UNLOCKED";
-    char buf[12]; sprintf(buf, "%02X", response[27]); data.status_code = String(buf);
+    char buf[16]; sprintf(buf, "%02X", response[27]); data.status_code = String(buf);
     sprintf(buf, "%02d/%02d/20%02d", response[2], response[1], response[0]); data.mfg_date = String(buf);
     data.capacity = String(nibble_swap(response[24]) / 10.0f, 1) + "Ah";
     data.battery_type = String(nibble_swap(response[19]));
