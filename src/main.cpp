@@ -1,6 +1,8 @@
 
 // src/main.cpp - ESP32-C3 FIXED VERSION
+#define USER_SETUP_LOADED
 
+#include <TFT_eSPI.h>
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -9,23 +11,20 @@
 #include "FS.h"
 #include "SPIFFS.h"
 #include "MakitaBMS.h"
-#include <lvgl.h>
-#include <TFT_eSPI.h>
 
-// --- Settings and global objects ---
-#define ONEWIRE_PIN 4
-#define ENABLE_PIN 1
+#include "esp_task_wdt.h"
 
 TFT_eSPI tft = TFT_eSPI();
 
-static lv_disp_draw_buf_t draw_buf;
-static lv_color_t buf[320 * 10];
+// --- Settings and global objects ---
+#define ONEWIRE_PIN 4
+#define ENABLE_PIN 16
 
-// UI prvky
-lv_obj_t *label_voltage;
-lv_obj_t *label_cells;
-lv_obj_t *label_temp;
-lv_obj_t *label_status;
+// TFT_eSPI tft = TFT_eSPI();
+
+static bool displayInitialized = false; // track if display is set up
+
+// UI prvky - removed for simple TFT
 
 const char *ssid = "Makita_BMS_Toolicek";
 
@@ -44,10 +43,10 @@ void sendJsonResponse(const String &type, const BatteryData &data, const Support
     if (ws.count() == 0)
         return;
 
-    DynamicJsonDocument doc(2048);
+    JsonDocument doc;
     doc["type"] = type;
 
-    JsonObject dataObj = doc.createNestedObject("data");
+    JsonObject dataObj = doc["data"].to<JsonObject>();
     dataObj["model"] = data.model;
     dataObj["charge_cycles"] = data.charge_cycles;
     dataObj["lock_status"] = data.lock_status;
@@ -57,7 +56,7 @@ void sendJsonResponse(const String &type, const BatteryData &data, const Support
     dataObj["battery_type"] = data.battery_type;
     dataObj["pack_voltage"] = data.pack_voltage;
 
-    JsonArray cellV = dataObj.createNestedArray("cell_voltages");
+    JsonArray cellV = dataObj["cell_voltages"].to<JsonArray>();
     for (int i = 0; i < 5; i++)
         cellV.add(data.cell_voltages[i]);
 
@@ -68,7 +67,7 @@ void sendJsonResponse(const String &type, const BatteryData &data, const Support
 
     if (features)
     {
-        JsonObject featuresObj = doc.createNestedObject("features");
+        JsonObject featuresObj = doc["features"].to<JsonObject>();
         featuresObj["read_dynamic"] = features->read_dynamic;
         featuresObj["led_test"] = features->led_test;
         featuresObj["clear_errors"] = features->clear_errors;
@@ -84,7 +83,7 @@ void sendFeedback(const String &type, const String &message)
     if (ws.count() == 0)
         return;
 
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     doc["type"] = type;
     doc["message"] = message;
 
@@ -98,7 +97,7 @@ void sendPresence(bool is_present)
     if (ws.count() == 0)
         return;
 
-    DynamicJsonDocument doc(64);
+    JsonDocument doc;
     doc["type"] = "presence";
     doc["present"] = is_present;
 
@@ -109,7 +108,7 @@ void sendPresence(bool is_present)
 
 void logToClients(const String &message, LogLevel level)
 {
-    Serial.println(message);
+    // Serial.println(message);
     String prefix = (level == LOG_LEVEL_DEBUG) ? "[DBG] " : "";
     sendFeedback("debug", prefix + message);
 }
@@ -122,19 +121,19 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
 
     if (type == WS_EVT_CONNECT)
     {
-        Serial.printf("WS client #%lu connected\n", client->id());
+        // Serial.printf("WS client #%lu connected\n", client->id());
         sendPresence(bms.isPresent());
     }
 
     else if (type == WS_EVT_DISCONNECT)
     {
-        Serial.printf("WS client #%lu disconnected\n", client->id());
+        // Serial.printf("WS client #%lu disconnected\n", client->id());
     }
 
     else if (type == WS_EVT_DATA)
     {
 
-        DynamicJsonDocument doc(256);
+        JsonDocument doc;
 
         if (deserializeJson(doc, (char *)data) != DeserializationError::Ok)
             return;
@@ -242,67 +241,19 @@ public:
     }
 };
 
-void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
-{
-    uint32_t w = area->x2 - area->x1 + 1;
-    uint32_t h = area->y2 - area->y1 + 1;
-
-    tft.startWrite();
-    tft.setAddrWindow(area->x1, area->y1, w, h);
-    tft.pushColors((uint16_t *)&color_p->full, w * h, true);
-    tft.endWrite();
-
-    lv_disp_flush_ready(disp);
-}
-
-void create_ui()
-{
-    lv_obj_t *scr = lv_scr_act();
-
-    label_voltage = lv_label_create(scr);
-    lv_obj_align(label_voltage, LV_ALIGN_TOP_LEFT, 10, 10);
-
-    label_cells = lv_label_create(scr);
-    lv_obj_align(label_cells, LV_ALIGN_TOP_LEFT, 10, 40);
-
-    label_temp = lv_label_create(scr);
-    lv_obj_align(label_temp, LV_ALIGN_TOP_LEFT, 10, 70);
-
-    label_status = lv_label_create(scr);
-    lv_obj_align(label_status, LV_ALIGN_TOP_LEFT, 10, 100);
-}
-
-void updateDisplay()
-{
-    char buffer[128];
-
-    sprintf(buffer, "Voltage: %.2f V", cached_data.pack_voltage);
-    lv_label_set_text(label_voltage, buffer);
-
-    sprintf(buffer, "Cells: %.2f %.2f %.2f %.2f %.2f",
-            cached_data.cell_voltages[0],
-            cached_data.cell_voltages[1],
-            cached_data.cell_voltages[2],
-            cached_data.cell_voltages[3],
-            cached_data.cell_voltages[4]);
-    lv_label_set_text(label_cells, buffer);
-
-    sprintf(buffer, "Temp: %.1f / %.1f C",
-            cached_data.temp1,
-            cached_data.temp2);
-    lv_label_set_text(label_temp, buffer);
-
-    sprintf(buffer, "Cycles: %d", cached_data.charge_cycles);
-    lv_label_set_text(label_status, buffer);
-}
+// LVGL functions removed for simple TFT
 
 // --- Setup ---
 
 void setup()
 {
 
+    // Disable watchdog timer to prevent resets during initialization
+    esp_task_wdt_deinit();
+
     Serial.begin(115200);
-    Serial.println("\nStarting Makita BMS Tool...");
+    delay(1000); // Wait for serial monitor to connect
+    Serial.println("\n\n===== Starting Makita BMS Tool =====");
 
     if (!SPIFFS.begin(true))
     {
@@ -310,21 +261,35 @@ void setup()
         return;
     }
 
-    Serial.println("SPIFFS mounted successfully.");
+    Serial.println("SPIFFS mounted OK");
 
     bms.setLogCallback(logToClients);
 
     // ===== WIFI FIX FOR ESP32-C3 =====
 
-    WiFi.mode(WIFI_AP);
-    WiFi.setSleep(false);
+    WiFi.mode(WIFI_AP_STA);              // Changed from WIFI_AP to WIFI_AP_STA for better stability
+    WiFi.persistent(false);              // Don't save settings to flash
+    WiFi.setSleep(false);                // Disable WiFi sleep mode
+    WiFi.setTxPower(WIFI_POWER_19_5dBm); // Set medium TX power
 
-    bool result = WiFi.softAP(ssid, "12345678", 1);
+    // Increase beacon interval for stability
+    WiFi.softAPConfig(
+        IPAddress(192, 168, 4, 1),  // IP
+        IPAddress(192, 168, 4, 1),  // Gateway
+        IPAddress(255, 255, 255, 0) // Subnet mask
+    );
+
+    bool result = WiFi.softAP(ssid, "12345678", 1, false, 4); // channel 1, no hidden, max 4 clients
+    delay(100);                                               // Stability improvement
 
     if (result)
-        Serial.println("Access Point started");
+    {
+        Serial.println("Access Point started successfully");
+    }
     else
+    {
         Serial.println("Access Point FAILED");
+    }
 
     Serial.print("SSID: ");
     Serial.println(ssid);
@@ -340,48 +305,56 @@ void setup()
     server.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html");
 
     dnsServer.start(53, "*", WiFi.softAPIP());
+    delay(50); // Stability improvement
 
     server.addHandler(new CaptiveRequestHandler());
 
     server.begin();
+    delay(100); // Stability improvement
+    Serial.println("HTTP server ready");
 
-    Serial.println("HTTP server with WebSocket is ready.");
+    Serial.println("Setup complete - waiting for connections");
 
-    // ===== DISPLAY INIT =====
+    // ===== TFT INIT =====
 
+    Serial.println("TFT init...");
+
+    // ⚠️ HARD RESET SPI + TFT
+
+    // HARD RESET TFT
+    pinMode(4, OUTPUT);
+    digitalWrite(4, LOW);
+    delay(50);
+    digitalWrite(4, HIGH);
+    delay(150);
+
+    // ⚠️ NECHAJ TFT_eSPI robiť SPI!
     tft.begin();
     tft.setRotation(1);
+    tft.fillScreen(TFT_BLACK);
 
-    pinMode(21, OUTPUT);
-    digitalWrite(21, HIGH); // backlight
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(10, 10);
+    tft.println("Makita BMS");
+    tft.println("READY");
 
-    lv_init();
-
-    lv_disp_draw_buf_init(&draw_buf, buf, NULL, 320 * 10);
-
-    static lv_disp_drv_t disp_drv;
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.flush_cb = my_disp_flush;
-    disp_drv.draw_buf = &draw_buf;
-    disp_drv.hor_res = 320;
-    disp_drv.ver_res = 240;
-    lv_disp_drv_register(&disp_drv);
-
-    create_ui();
+    Serial.println("TFT initialized successfully");
+    displayInitialized = true;
 }
-
-// --- Loop ---
 
 void loop()
 {
     static unsigned long lastUpdate = 0;
 
-    if (millis() - lastUpdate > 1000)
-    {
-        updateDisplay();
-        lastUpdate = millis();
-    }
+    // Display updates disabled (no LVGL to save memory)
+    // if (displayInitialized && millis() - lastUpdate > 1000)
+    // {
+    //     updateDisplay();
+    //     lastUpdate = millis();
+    // }
 
-    lv_timer_handler();
     dnsServer.processNextRequest();
+    yield();  // Allow background tasks (WiFi watchdog, etc.)
+    delay(1); // Prevent watchdog timeout
 }
